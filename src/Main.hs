@@ -74,7 +74,9 @@ removeToDo t =
         u   <- getUser
         len <- gets (maybe (-1) length . M.lookup u)
         if i >= len || i < 0 then sendReply "index out of bounds"
-        else modify (M.adjust (dropAt i 0) u)
+        else do
+            modify (M.adjust (dropAt i 0) u)
+            sendReply "job removed"
   where
     dropAt :: Int -> Int -> [a] -> [a]
     dropAt _ _ []     = []
