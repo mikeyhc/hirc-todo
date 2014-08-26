@@ -63,7 +63,7 @@ printList i (x:xs) = sendReply (show i ++ ": " ++ x)
 addToDo :: String -> ToDoMonad ()
 addToDo t = do
     u <- getUser
-    modify $ M.insertWith (++) u [t]
+    modify $ M.insertWith (flip (++)) u [t]
     sendReply "job added"
 
 removeToDo :: String -> ToDoMonad ()
