@@ -53,9 +53,11 @@ todo = do
     else when ("!nodo " `isPrefixOf` msg) (removeToDo (drop 6 msg))
 
 help :: ToDoMonad ()
-help = sendReply "!todo:         list all jobs to be done"
-    >> sendReply "!todo message: add a job"
-    >> sendReply "!nodo id:      remove a job"
+help = sendReply "!todo:               list all jobs to be done"
+    >> sendReply "!todo message:       add a job"
+    >> sendReply "!youdo user message: give a user a job"
+    >> sendReplu "!youdo:              enable/disable youdo command"
+    >> sendReply "!nodo id:            remove a job"
 
 listToDo :: ToDoMonad ()
 listToDo =  do
