@@ -3,3 +3,5 @@
 irclogs
 dist
 *.swp
+*.sqlite
+*.sqlite3

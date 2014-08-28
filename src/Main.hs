@@ -3,23 +3,23 @@
 
 module Main where
 
-import           Control.Monad (when)
-import           Control.Monad.State
+import           Control.Monad (when, void)
+import           Control.Monad.Reader
 import           Control.Monad.Trans
 import           Data.List (isPrefixOf)
-import qualified Data.Map as M
+import qualified Database.HDBC as DB
+import qualified Database.HDBC.Sqlite3 as DB
 import           HarkerIRC.Client
 import           HarkerIRC.Types
 
-newtype ToDoMonadT m a = ToDoMonad (StateT (M.Map User [String])
+newtype ToDoMonadT m a = ToDoMonad (ReaderT DB.Connection
                                     (HarkerClientT m) a)
     deriving (Monad, MonadIO, Functor)
 type ToDoMonad a = ToDoMonadT IO a
 
-instance (Monad m) => MonadState (M.Map User [String]) (ToDoMonadT m) where
-    get   = ToDoMonad get
-    put   = ToDoMonad . put
-    state = ToDoMonad . state
+instance MonadReader DB.Connection (ToDoMonadT IO) where
+    ask   = ToDoMonad ask
+    local = local
 
 instance MonadTrans ToDoMonadT where
     lift = ToDoMonad . lift . lift
@@ -27,10 +27,22 @@ instance MonadTrans ToDoMonadT where
 instance HarkerClientMonad (ToDoMonadT IO) where
     clientLift = ToDoMonad . lift
 
-runToDoMonad :: ToDoMonad () -> IO ()
-runToDoMonad (ToDoMonad s) = runHarkerClient (evalStateT s M.empty)
+runToDoMonad :: DB.Connection -> ToDoMonad () -> IO ()
+runToDoMonad conn (ToDoMonad r) = runHarkerClient (runReaderT r conn)
 
-main = runPlugin "todo" "0.1.0.0" todo runToDoMonad
+main :: IO ()
+main = do
+    conn <- DB.connectSqlite3 "todo.sqlite3"
+    createTable conn
+    runPlugin "todo" "0.1.0.0" todo (runToDoMonad conn)
+
+createTable :: DB.Connection -> IO ()
+createTable conn = do
+    stmt <- DB.prepare conn "CREATE TABLE IF NOT EXISTS todo(\
+                            \ user TEXT NOT NULL, \
+                            \ job TEX NOT NULL)"
+    void $ DB.execute stmt []
+    DB.commit conn
 
 todo :: ToDoMonad ()
 todo = do
@@ -48,23 +60,35 @@ help = sendReply "!todo:         list all jobs to be done"
 listToDo :: ToDoMonad ()
 listToDo =  do
     u <- getUser
-    ml <- gets $ M.lookup u
+    l <- sqlGetToDo u
     sendReply "to do"
     sendReply "====="
-    case ml of
-        Just l -> printList 0 l
-        _      -> return ()
+    printList 0 l
 
 printList :: Int -> [String] -> ToDoMonad ()
 printList _ []     = return ()
 printList i (x:xs) = sendReply (show i ++ ": " ++ x)
                   >> printList (i + 1) xs
 
+sqlGetToDo :: String -> ToDoMonad [String]
+sqlGetToDo u = do
+    conn <- ask
+    liftIO . fmap (map (DB.fromSql . head)) $ DB.quickQuery' conn 
+        "SELECT job FROM todo  WHERE user=?" [ DB.toSql u ]
+
 addToDo :: String -> ToDoMonad ()
 addToDo t = do
+    return ()
     u <- getUser
-    modify $ M.insertWith (flip (++)) u [t]
+    sqlAddJob u t
     sendReply "job added"
+
+sqlAddJob :: String -> String -> ToDoMonad ()
+sqlAddJob u j = do
+    conn <- ask
+    liftIO . void $ DB.run conn "INSERT INTO todo VALUES(?,?)"
+                    [ DB.toSql u, DB.toSql j ]
+    liftIO $ DB.commit conn
 
 removeToDo :: String -> ToDoMonad ()
 removeToDo t = 
@@ -72,18 +96,27 @@ removeToDo t =
     else do
         let i = read t 
         u   <- getUser
-        len <- gets (maybe (-1) length . M.lookup u)
-        if i >= len || i < 0 then sendReply "index out of bounds"
-        else do
-            modify (M.adjust (dropAt i 0) u)
-            sendReply "job removed"
+        sqlRemoveToDo u i
   where
-    dropAt :: Int -> Int -> [a] -> [a]
-    dropAt _ _ []     = []
-    dropAt x y (z:zs) 
-        | x == y    = zs
-        | otherwise = z:dropAt x (y + 1) zs
-
     isInteger s = case reads s :: [(Integer, String)] of
         [(_, "")] -> True
         _         -> False
+
+sqlRemoveToDo :: String -> Int -> ToDoMonad ()
+sqlRemoveToDo u i = do
+    conn <- ask
+    idl <- liftIO . fmap (map head) $ DB.quickQuery' conn
+        "SELECT rowid FROM todo WHERE user=?" [ DB.toSql u ]
+    case getElem i idl of
+        Nothing -> sendReply "id out of bounds"
+        Just e  -> do
+            liftIO . void $ DB.run conn "DELETE FROM todo WHERE rowid=?"
+                            [ e ]
+            liftIO $ DB.commit conn
+            sendReply "job removed"
+
+  where
+    getElem :: Int -> [a] -> Maybe a
+    getElem _ []     = Nothing
+    getElem 0 (x:_)  = Just x
+    getElem i (_:xs) = getElem (i - 1) xs
