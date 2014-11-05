@@ -3,8 +3,10 @@
 
 module Main where
 
+import           Control.Arrow (second)
 import           Control.Monad (when, void)
 import           Control.Monad.Reader
+import           Control.Monad.State
 import           Control.Monad.Trans
 import           Data.List (isPrefixOf)
 import qualified Database.HDBC as DB
@@ -12,23 +14,28 @@ import qualified Database.HDBC.Sqlite3 as DB
 import           HarkerIRC.Client
 import           HarkerIRC.Types
 
-newtype ToDoMonadT m a = ToDoMonad (ReaderT DB.Connection
-                                    (HarkerClientT m) a)
+newtype ToDoMonadT m a = ToDoMonad (StateT Bool
+                                   (ReaderT DB.Connection
+                                   (HarkerClientT m)) a)
     deriving (Monad, MonadIO, Functor)
 type ToDoMonad a = ToDoMonadT IO a
 
 instance MonadReader DB.Connection (ToDoMonadT IO) where
-    ask   = ToDoMonad ask
+    ask   = ToDoMonad (lift ask)
     local = local
 
+instance MonadState Bool (ToDoMonadT IO) where
+    state = ToDoMonad . state
+
 instance MonadTrans ToDoMonadT where
-    lift = ToDoMonad . lift . lift
+    lift = ToDoMonad . lift . lift . lift
 
 instance HarkerClientMonad (ToDoMonadT IO) where
-    clientLift = ToDoMonad . lift
+    clientLift = ToDoMonad . lift . lift
 
 runToDoMonad :: DB.Connection -> ToDoMonad () -> IO ()
-runToDoMonad conn (ToDoMonad r) = runHarkerClient (runReaderT r conn)
+runToDoMonad conn (ToDoMonad r) = runHarkerClient (runReaderT 
+                                                  (evalStateT r False) conn)
 
 main :: IO ()
 main = do
@@ -40,7 +47,7 @@ createTable :: DB.Connection -> IO ()
 createTable conn = do
     stmt <- DB.prepare conn "CREATE TABLE IF NOT EXISTS todo(\
                             \ user TEXT NOT NULL, \
-                            \ job TEX NOT NULL)"
+                            \ job TEXT NOT NULL)"
     void $ DB.execute stmt []
     DB.commit conn
 
@@ -49,6 +56,8 @@ todo = do
     msg <- getMsg
     if      msg == "!help"                then help
     else if msg == "!todo"                then listToDo
+    else if msg == "!youdo"               then ifauth toggleYouDo
+    else if "!youdo " `isPrefixOf` msg    then youdo (drop 7 msg)   
     else if "!todo " `isPrefixOf` msg     then addToDo (drop 6 msg)
     else when ("!nodo " `isPrefixOf` msg) (removeToDo (drop 6 msg))
 
@@ -56,7 +65,7 @@ help :: ToDoMonad ()
 help = sendReply "!todo:               list all jobs to be done"
     >> sendReply "!todo message:       add a job"
     >> sendReply "!youdo user message: give a user a job"
-    >> sendReplu "!youdo:              enable/disable youdo command"
+    >> sendReply "!youdo:              enable/disable youdo command"
     >> sendReply "!nodo id:            remove a job"
 
 listToDo :: ToDoMonad ()
@@ -66,6 +75,24 @@ listToDo =  do
     sendReply "to do"
     sendReply "====="
     printList 0 l
+
+toggleYouDo :: ToDoMonad ()
+toggleYouDo = do
+    curval <- get
+    modify not
+    sendReply ("youdo is now " ++ if curval then "disabled"
+                                            else "enabled")
+
+youdo :: String -> ToDoMonad ()
+youdo str = do
+    canYouDo <- get
+    if canYouDo then handleYouDo (second tail (break (== ' ') str))
+                else sendReply "youdo disabled"
+  where
+    handleYouDo :: (String, String) -> ToDoMonad ()
+    handleYouDo (user, job) = do
+        sqlAddJob user job
+        sendReply $ "job added for " ++ user
 
 printList :: Int -> [String] -> ToDoMonad ()
 printList _ []     = return ()
@@ -80,7 +107,6 @@ sqlGetToDo u = do
 
 addToDo :: String -> ToDoMonad ()
 addToDo t = do
-    return ()
     u <- getUser
     sqlAddJob u t
     sendReply "job added"
