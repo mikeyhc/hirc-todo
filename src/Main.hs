@@ -54,15 +54,19 @@ createTable conn = do
 
 todo :: ToDoMonad ()
 todo = do
-    msg <- getMsg
-    cyd <- gets fst
+    msg  <- getMsg
+    cyd  <- gets fst
+    user <- getUser
     if      msg == "!help"                then help
-    else if msg == "!todo"                then listToDo
+    else if msg == "!todo"                then listToDo >> clearYouDo user
     else if msg == "!youdo"               then ifauth toggleYouDo
     else if "!youdo " `isPrefixOf` msg    then youdo (drop 7 msg)   
     else if "!todo " `isPrefixOf` msg     then addToDo (drop 6 msg)
     else when ("!nodo " `isPrefixOf` msg) (removeToDo (drop 6 msg))
     when cyd checkYouDo 
+
+clearYouDo :: User -> ToDoMonad ()
+clearYouDo user = modify (second (filter (/= user)))
 
 checkYouDo :: ToDoMonad ()
 checkYouDo = do
@@ -70,7 +74,7 @@ checkYouDo = do
     user <- getUser
     case find (== user) youdoList of
         Just u -> sendReply (user ++ ", you have pending jobs")
-               >> modify (second (filter (/= user)))
+               >> clearYouDo user
         _      -> return ()
 
 help :: ToDoMonad ()
