@@ -3,18 +3,18 @@
 
 module Main where
 
-import           Control.Arrow (second)
+import           Control.Arrow (first, second)
 import           Control.Monad (when, void)
 import           Control.Monad.Reader
 import           Control.Monad.State
 import           Control.Monad.Trans
-import           Data.List (isPrefixOf)
+import           Data.List (isPrefixOf, find)
 import qualified Database.HDBC as DB
 import qualified Database.HDBC.Sqlite3 as DB
 import           HarkerIRC.Client
 import           HarkerIRC.Types
 
-newtype ToDoMonadT m a = ToDoMonad (StateT Bool
+newtype ToDoMonadT m a = ToDoMonad (StateT (Bool, [String])
                                    (ReaderT DB.Connection
                                    (HarkerClientT m)) a)
     deriving (Monad, MonadIO, Functor)
@@ -24,7 +24,7 @@ instance MonadReader DB.Connection (ToDoMonadT IO) where
     ask   = ToDoMonad (lift ask)
     local = local
 
-instance MonadState Bool (ToDoMonadT IO) where
+instance MonadState (Bool, [String]) (ToDoMonadT IO) where
     state = ToDoMonad . state
 
 instance MonadTrans ToDoMonadT where
@@ -35,7 +35,8 @@ instance HarkerClientMonad (ToDoMonadT IO) where
 
 runToDoMonad :: DB.Connection -> ToDoMonad () -> IO ()
 runToDoMonad conn (ToDoMonad r) = runHarkerClient (runReaderT 
-                                                  (evalStateT r False) conn)
+                                                  (evalStateT r (False, [])) 
+                                                  conn)
 
 main :: IO ()
 main = do
@@ -54,12 +55,23 @@ createTable conn = do
 todo :: ToDoMonad ()
 todo = do
     msg <- getMsg
+    cyd <- gets fst
     if      msg == "!help"                then help
     else if msg == "!todo"                then listToDo
     else if msg == "!youdo"               then ifauth toggleYouDo
     else if "!youdo " `isPrefixOf` msg    then youdo (drop 7 msg)   
     else if "!todo " `isPrefixOf` msg     then addToDo (drop 6 msg)
     else when ("!nodo " `isPrefixOf` msg) (removeToDo (drop 6 msg))
+    when cyd checkYouDo 
+
+checkYouDo :: ToDoMonad ()
+checkYouDo = do
+    youdoList <- gets snd
+    user <- getUser
+    case find (== user) youdoList of
+        Just u -> sendReply (user ++ ", you have pending jobs")
+               >> modify (second (filter (/= user)))
+        _      -> return ()
 
 help :: ToDoMonad ()
 help = sendReply "!todo:               list all jobs to be done"
@@ -78,14 +90,14 @@ listToDo =  do
 
 toggleYouDo :: ToDoMonad ()
 toggleYouDo = do
-    curval <- get
-    modify not
+    curval <- gets fst
+    modify (first not)
     sendReply ("youdo is now " ++ if curval then "disabled"
                                             else "enabled")
 
 youdo :: String -> ToDoMonad ()
 youdo str = do
-    canYouDo <- get
+    canYouDo <- gets fst
     if canYouDo then handleYouDo (second tail (break (== ' ') str))
                 else sendReply "youdo disabled"
   where
@@ -93,6 +105,7 @@ youdo str = do
     handleYouDo (user, job) = do
         sqlAddJob user job
         sendReply $ "job added for " ++ user
+        modify (second (user:))
 
 printList :: Int -> [String] -> ToDoMonad ()
 printList _ []     = return ()
